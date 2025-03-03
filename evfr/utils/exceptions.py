@@ -1,7 +1,7 @@
 """
-Custom Exceptions
+exceptions.py
 -----------------
-Defines custom exceptions for EVFR.
+Custom exceptions for the EVFR package.
 """
 
 class EVFRException(Exception):
