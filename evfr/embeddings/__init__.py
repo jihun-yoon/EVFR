@@ -1,0 +1,3 @@
+"""
+Embedding models for EVFR.
+"""
