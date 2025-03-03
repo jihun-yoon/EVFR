@@ -1,2 +1,9 @@
 # Python version: 3.10
+#--index-url https://pypi.org/simple
+#--extra-index-url https://download.pytorch.org/whl/cu118
+#torch==2.6.0+cu118
+#torchvision==0.21.0+cu118
 numpy==2.2.3
+transformers==4.49.0
+Pillow==11.1.0
+tqdm==4.67.1
