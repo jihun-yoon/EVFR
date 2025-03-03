@@ -1,4 +1,8 @@
-# evfr/utils/file_io.py
+"""
+file_io.py
+--------------------
+Utility functions for saving and loading embeddings.
+"""
 
 import torch
 import numpy as np

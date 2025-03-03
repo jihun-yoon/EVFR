@@ -1,7 +1,7 @@
 """
-Distance Metrics
+distance_metrics.py
 ----------------
-Provides various distance functions for EVFR.
+A collection of common distance metrics for comparing vectors.
 """
 
 import numpy as np

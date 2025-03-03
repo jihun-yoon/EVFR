@@ -1,5 +1,5 @@
 """
-Base Embedding Class
+base.py
 --------------------
 Defines a generic interface for embedding extraction.
 """
