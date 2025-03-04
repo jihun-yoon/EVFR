@@ -1,33 +1,51 @@
 """
 custom_ddp_sampler.py
 --------------------
-A custom sampler for DistributedDataParallel (DDP) inference.
+Implements a custom sampler for distributed inference in PyTorch DDP setups.
+Distributes dataset samples across multiple processes efficiently.
 """
 
+from typing import Iterator, List, Optional
 import math
 import torch
-from torch.utils.data import Sampler
+from torch.utils.data import Sampler, Dataset
 
-class CustomDistributedSampler(Sampler):
+
+class CustomDistributedSampler(Sampler[int]):
     """
-    A custom sampler that splits the dataset among 'num_replicas' processes,
-    each with a different 'rank'. By default, no shuffling is applied.
+    Distributed sampler optimized for inference that partitions data across processes.
+    
+    Divides a dataset into non-overlapping chunks across multiple processes for
+    parallel inference. Supports optional shuffling, though typically not used
+    during inference.
     """
 
-    def __init__(self, dataset, num_replicas=None, rank=None, shuffle=False):
+    def __init__(
+        self, 
+        dataset: Dataset,
+        num_replicas: Optional[int] = None,
+        rank: Optional[int] = None,
+        shuffle: bool = False
+    ) -> None:
         """
-        :param dataset: The dataset to sample from.
-        :param num_replicas: Total number of distributed processes (world_size).
-        :param rank: The current process index.
-        :param shuffle: If True, randomize the order (not typical for inference).
+        Initialize the distributed sampler.
+
+        Args:
+            dataset: Dataset to sample from
+            num_replicas: Number of distributed processes. If None, obtained from distributed group
+            rank: Process ID within distributed group. If None, obtained from distributed group
+            shuffle: Whether to shuffle indices. Defaults to False for deterministic inference
+
+        Raises:
+            RuntimeError: If distributed environment not initialized when num_replicas/rank not provided
         """
         if num_replicas is None:
             if not torch.distributed.is_initialized():
-                raise RuntimeError("Requires either 'num_replicas' or a default group.")
+                raise RuntimeError("Distributed environment must be initialized when num_replicas not provided")
             num_replicas = torch.distributed.get_world_size()
         if rank is None:
             if not torch.distributed.is_initialized():
-                raise RuntimeError("Requires either 'rank' or a default group.")
+                raise RuntimeError("Distributed environment must be initialized when rank not provided")
             rank = torch.distributed.get_rank()
 
         self.dataset = dataset
@@ -38,26 +56,32 @@ class CustomDistributedSampler(Sampler):
         self.num_samples = len(self.dataset)
         self.num_per_replica = math.ceil(self.num_samples / self.num_replicas)
 
-        # If total samples not divisible, last rank might get fewer.
+    def __iter__(self) -> Iterator[int]:
+        """
+        Generate iteration order for current process's data partition.
 
-    def __iter__(self):
-        indices = list(range(self.num_samples))
+        Returns:
+            Iterator over sample indices for this process's partition
+        """
+        indices: List[int] = list(range(self.num_samples))
 
         if self.shuffle:
-            # For inference, we often don't shuffle, but you can add your logic
             g = torch.Generator()
-            g.manual_seed(0)  # or any seed
+            g.manual_seed(0)
             indices = torch.randperm(self.num_samples, generator=g).tolist()
 
-        # Partition the data for this rank
         start = self.rank * self.num_per_replica
         end = min(start + self.num_per_replica, self.num_samples)
 
-        indices = indices[start:end]
-        return iter(indices)
+        return iter(indices[start:end])
 
-    def __len__(self):
-        # Return how many samples THIS rank sees
+    def __len__(self) -> int:
+        """
+        Get number of samples for current process.
+
+        Returns:
+            Number of samples in this process's partition
+        """
         start = self.rank * self.num_per_replica
         end = min(start + self.num_per_replica, self.num_samples)
         return end - start
