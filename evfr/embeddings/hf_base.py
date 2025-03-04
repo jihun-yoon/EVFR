@@ -1,122 +1,111 @@
 """
 huggingface_base.py
 -------------------
-A base class for Hugging Face-based embedding models, now supporting batch inference.
+A base class for Hugging Face-based embedding models supporting batch inference.
 """
 
+from typing import List, Optional, Union
 import torch
 import numpy as np
 from abc import abstractmethod
 from transformers import AutoImageProcessor, AutoModel
 from PIL import Image
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from evfr.embeddings.base import BaseEmbeddingModel
 
 
 class HuggingFaceBaseEmbedding(BaseEmbeddingModel):
-    """
-    Abstract base class for Hugging Face-based embedding models.
-    Provides generic logic for:
-      - Model loading
-      - Image preprocessing (single or batch)
-      - Feature extraction (pooler or custom)
-      - Optional usage of AutoImageProcessor
+    """Base class for Hugging Face embedding models with batched inference support.
+
+    Provides functionality for:
+    - Model loading and initialization
+    - Single and batch image processing
+    - Feature extraction with pooling options
+    - Optional AutoImageProcessor integration
     """
 
     def __init__(
         self,
-        model_name=None,
-        use_pooler=True,
-        device=None,
-        use_processor=True,
-    ):
-        """
-        :param model_name: Hugging Face model checkpoint name.
-        :param use_pooler: If True, use outputs.pooler_output if available.
-        :param device: "cuda" or "cpu" or None. Defaults to cuda if available.
-        :param use_processor: If True, apply AutoImageProcessor transforms
-                              (resize, normalize, etc.). If False, assume
-                              images/tensors are already in correct format.
+        model_name: Optional[str] = None,
+        use_pooler: bool = True,
+        device: Optional[str] = None,
+        use_processor: bool = True,
+    ) -> None:
+        """Initialize HuggingFace embedding model.
+
+        Args:
+            model_name: HuggingFace model identifier. Uses default if None.
+            use_pooler: Whether to use pooler output when available.
+            device: Computation device ('cuda'/'cpu'). Auto-detects if None.
+            use_processor: Whether to use AutoImageProcessor for preprocessing.
         """
         super().__init__()
         self.model_name = model_name if model_name else self._default_model_name()
         self.use_pooler = use_pooler
-        self.device = (
-            device if device else ("cuda" if torch.cuda.is_available() else "cpu")
-        )
+        self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
         self.use_processor = use_processor
 
-        # Load model
         self.model = AutoModel.from_pretrained(self.model_name).to(self.device)
         self.model.eval()
 
-        # If we want to handle transforms inside the model, load processor
-        if self.use_processor:
-            self.processor = AutoImageProcessor.from_pretrained(self.model_name)
-        else:
-            self.processor = None
+        self.processor = AutoImageProcessor.from_pretrained(self.model_name) if use_processor else None
 
     @abstractmethod
-    def _default_model_name(self):
+    def _default_model_name(self) -> str:
+        """Return default model identifier if none provided."""
         pass
 
-    def extract(self, frame):
+    def extract(self, frame: Union[Image.Image, torch.Tensor]) -> np.ndarray:
+        """Extract embeddings from single frame.
+
+        Args:
+            frame: Input image as PIL Image or tensor [C,H,W].
+
+        Returns:
+            1D numpy array of shape (hidden_dim,).
+
+        Raises:
+            TypeError: If frame format doesn't match processor settings.
         """
-        Extract embeddings from a single frame (PIL Image or tensor).
-        Returns a 1D NumPy array of shape (hidden_dim,).
-        """
-        # If using processor, we expect a PIL Image
-        # If not using processor, we expect a Torch tensor [C, H, W] or a PIL that you manually handle
         if self.use_processor:
             if not isinstance(frame, Image.Image):
-                raise TypeError("Frame must be a PIL Image when use_processor=True.")
+                raise TypeError("Frame must be PIL Image when use_processor=True")
             inputs = self.processor(images=frame, return_tensors="pt").to(self.device)
         else:
-            # We assume 'frame' is already a tensor
             if isinstance(frame, Image.Image):
-                # If your dataset returned a PIL image but you're skipping HF transforms,
-                # you must manually convert to tensor if needed. Example:
-                frame = self._pil_to_tensor(frame)  # user-defined
-            # Now frame should be a torch.Tensor of shape [C, H, W]
-            inputs = {
-                "pixel_values": frame.unsqueeze(0).to(self.device)
-            }  # Add batch dimension
+                frame = self._pil_to_tensor(frame)
+            inputs = {"pixel_values": frame.unsqueeze(0).to(self.device)}
 
         with torch.no_grad():
             outputs = self.model(**inputs)
 
         return self._postprocess_single(outputs)
 
-    def extract_batch(self, frames, batch_size=8):
-        """
-        Extract embeddings for a list of frames in batches.
-        frames: List of frames (PIL or tensor).
+    def extract_batch(self, frames: List[Union[Image.Image, torch.Tensor]], batch_size: int = 8) -> np.ndarray:
+        """Extract embeddings from multiple frames.
+
+        Args:
+            frames: List of frames (PIL Images or tensors).
+            batch_size: Number of frames to process at once.
+
+        Returns:
+            2D numpy array of shape (n_frames, hidden_dim).
         """
         all_embeddings = []
         for start_idx in range(0, len(frames), batch_size):
             batch_frames = frames[start_idx : start_idx + batch_size]
 
             if self.use_processor:
-                # Expect a list of PIL images
                 if any(not isinstance(f, Image.Image) for f in batch_frames):
-                    raise TypeError(
-                        "All frames must be PIL Images when use_processor=True."
-                    )
-                inputs = self.processor(images=batch_frames, return_tensors="pt").to(
-                    self.device
-                )
+                    raise TypeError("All frames must be PIL Images when use_processor=True")
+                inputs = self.processor(images=batch_frames, return_tensors="pt").to(self.device)
             else:
-                # Expect a list of torch tensors
-                tensor_list = []
-                for f in batch_frames:
-                    if isinstance(f, Image.Image):
-                        f = self._pil_to_tensor(f)
-                    tensor_list.append(f)
-                # Stack them into shape [B, C, H, W]
-                inputs = {
-                    "pixel_values": torch.stack(tensor_list, dim=0).to(self.device)
-                }
+                tensor_list = [
+                    self._pil_to_tensor(f) if isinstance(f, Image.Image) else f
+                    for f in batch_frames
+                ]
+                inputs = {"pixel_values": torch.stack(tensor_list, dim=0).to(self.device)}
 
             with torch.no_grad():
                 outputs = self.model(**inputs)
@@ -126,39 +115,27 @@ class HuggingFaceBaseEmbedding(BaseEmbeddingModel):
 
         return np.concatenate(all_embeddings, axis=0)
 
-    def extract_dataset(self, dataset, batch_size=8, num_workers=0):
-        """
-        Extract embeddings from an entire dataset.
-        Creates a DataLoader internally.
+    def extract_dataset(self, dataset: Dataset, batch_size: int = 8, num_workers: int = 0) -> np.ndarray:
+        """Extract embeddings from a PyTorch dataset.
 
-        :param dataset: A PyTorch Dataset returning either PIL Images or Tensors
-                        (depending on self.use_processor).
-        :param batch_size: DataLoader batch size
-        :param num_workers: Number of workers for DataLoader
-        :return: NumPy array of shape (N, hidden_dim), where N=len(dataset)
+        Args:
+            dataset: PyTorch Dataset returning PIL Images or tensors.
+            batch_size: Samples per batch.
+            num_workers: DataLoader worker processes.
+
+        Returns:
+            2D numpy array of shape (len(dataset), hidden_dim).
         """
-        # Build DataLoader
         dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers)
 
         all_embeddings = []
         with torch.no_grad():
             for batch in dataloader:
-                # batch could be a list of PIL Images or a single tensor of shape [B, C, H, W]
                 if self.use_processor:
-                    # Expect a list of PIL images in batch
-                    inputs = self.processor(images=batch, return_tensors="pt").to(
-                        self.device
-                    )
+                    inputs = self.processor(images=batch, return_tensors="pt").to(self.device)
                 else:
-                    # Expect a tensor of shape [B, C, H, W]
-                    # If your dataset returns a list of PIL, you'll need to convert inside the Dataset or here
                     if isinstance(batch, list):
-                        # Possibly the dataset returns a list of PIL even though use_processor=False.
-                        # Convert each to tensor
-                        batch_tensors = []
-                        for f in batch:
-                            batch_tensors.append(self._pil_to_tensor(f))
-                        batch = torch.stack(batch_tensors, dim=0)
+                        batch = torch.stack([self._pil_to_tensor(f) for f in batch], dim=0)
                     inputs = {"pixel_values": batch.to(self.device)}
 
                 outputs = self.model(**inputs)
@@ -167,16 +144,13 @@ class HuggingFaceBaseEmbedding(BaseEmbeddingModel):
 
         return np.concatenate(all_embeddings, axis=0)
 
-    def _postprocess_single(self, outputs):
+    def _postprocess_single(self, outputs) -> np.ndarray:
+        """Process model outputs for single image.
+
+        Returns:
+            1D numpy array of shape (hidden_dim,).
         """
-        Postprocess for a single image (batch_size=1).
-        Returns a 1D NumPy array (hidden_dim,).
-        """
-        if (
-            self.use_pooler
-            and hasattr(outputs, "pooler_output")
-            and outputs.pooler_output is not None
-        ):
+        if self.use_pooler and hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
             embedding = outputs.pooler_output.squeeze(0)
         else:
             hidden_states = outputs.last_hidden_state.squeeze(0)
@@ -184,30 +158,27 @@ class HuggingFaceBaseEmbedding(BaseEmbeddingModel):
 
         return embedding.cpu().numpy()
 
-    def _postprocess_batch(self, outputs):
+    def _postprocess_batch(self, outputs) -> np.ndarray:
+        """Process model outputs for image batch.
+
+        Returns:
+            2D numpy array of shape (batch_size, hidden_dim).
         """
-        Postprocess for a batch of images.
-        Returns a 2D NumPy array (batch_size, hidden_dim).
-        """
-        if (
-            self.use_pooler
-            and hasattr(outputs, "pooler_output")
-            and outputs.pooler_output is not None
-        ):
-            # shape: (batch_size, hidden_dim)
+        if self.use_pooler and hasattr(outputs, "pooler_output") and outputs.pooler_output is not None:
             batch_embeddings = outputs.pooler_output
         else:
-            # shape: (batch_size, seq_len, hidden_dim)
             hidden_states = outputs.last_hidden_state
-            # average-pool along seq_len
             batch_embeddings = torch.mean(hidden_states, dim=1)
 
         return batch_embeddings.cpu().numpy()
 
-    def _pil_to_tensor(self, pil_img):
-        """
-        Convert a PIL Image to a torch.Tensor [C, H, W].
-        Simple example. For real usage, consider using
-        torchvision.transforms.functional.to_tensor.
+    def _pil_to_tensor(self, pil_img: Image.Image) -> torch.Tensor:
+        """Convert PIL Image to normalized tensor.
+
+        Args:
+            pil_img: Input PIL Image.
+
+        Returns:
+            Tensor of shape [C,H,W] with values in [0,1].
         """
         return torch.from_numpy(np.array(pil_img).transpose(2, 0, 1)).float() / 255.0
