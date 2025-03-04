@@ -111,7 +111,11 @@ and extend.
    cd EVFR
    ```
 
-2. Install with pip (editable mode) or via setup.py:
+2. Install PyTorch and FAISS
+   - Follow [the official PyTorch installation guide](https://pytorch.org/get-started/locally/).
+   - Follow [the official FAISS installation guide](https://github.com/facebookresearch/faiss/blob/main/INSTALL.md).
+
+3. Install with pip (editable mode) or via setup.py:
 
     ```bash
     pip install -e .
